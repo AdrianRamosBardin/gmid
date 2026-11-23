@@ -6,9 +6,11 @@ import numpy as np
 
 from mosplot.expressions import (
     Expression,
+    NoiseExpressions,
     evaluate_expression,
     build_expressions,
     compute_device_width,
+    noise_metadata,
 )
 from mosplot.table import extract_2d_table
 from mosplot.interpolation import GridInterpolator
@@ -23,9 +25,13 @@ _LEGEND_TITLE: dict[str, str] = {
 }
 
 
-class Mosfet:
+class Mosfet(NoiseExpressions):
     """
     Initialize a MOSFET object.
+
+    Tables generated with noise also provide the noise expressions of
+    `mosplot.expressions.NoiseExpressions` (``sid_expression(f)``, ``svg_expression(f)``,
+    ``gamma_expression``, ``flicker_corner_expression``, ...).
 
     When creating a MOSFET object, exactly two of the parameters `length`, `vbs`, `vgs`, or `vds`
     must be provided as fixed values. The remaining parameters can be specified as a range or set to
@@ -97,6 +103,8 @@ class Mosfet:
         self.parameters = self.lookup_table["parameter_names"]
         self.device_parameters = self.lookup_table["device_parameters"]
         self.width = compute_device_width(self.device_parameters)
+        self._noise_meta = noise_metadata(self.lookup_table)
+        self._noise_param_names = list(self.parameters)
 
         self.secondary_var, self.filtered_variables, self.extracted_table = extract_2d_table(
             lookup_table=self.lookup_table,

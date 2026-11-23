@@ -70,6 +70,9 @@ Arguments:
 | `osdi_paths`         | `None`                                 | ngspice only. Compiled Verilog-A models (`.osdi`) to load.                           |
 | `hdl_paths`          | `None`                                 | HSPICE only. Verilog-A files to load.                                                |
 | `raw_spice`          | `None`                                 | Extra netlist lines, pasted verbatim.                                                |
+| `noise_frequencies`  | `None`                                 | Spectre only. Frequencies (Hz) at which to store noise; see [Noise](#noise-spectre). |
+| `noise_thermal_frequency` | highest of `noise_frequencies`    | Spectre only. Frequency whose drain noise is taken as the thermal (white) level.     |
+| `gate_noise`         | `True`                                 | Spectre only. Also store gate-current noise.                                         |
 
 At least one of `include_paths` or `lib_mappings` is required. Paths are checked
 before anything runs.
@@ -85,6 +88,59 @@ Available parameters:
 By default everything except `css` is saved. If your model does not expose a
 parameter, pass the ones you want in `parameters_to_save` rather than editing
 the repo.
+
+### Noise (Spectre)
+
+Noise depends on frequency, so it is stored at a fixed list of frequencies,
+with each frequency as its own 4-D parameter. These parameters behave like `gm`
+or `cgg` everywhere: plots, custom expressions, interpolation and the
+optimizer.
+
+```python
+sim = SpectreSimulator(
+    lib_mappings=[("/path/to/models.scs", "tt")],
+    noise_frequencies=[1, 1e3, 1e6, 1e9],   # Hz
+    # noise_thermal_frequency=1e9,          # default: the highest frequency
+    # gate_noise=True,
+)
+```
+
+Inside the DC sweep, a Spectre `noise` analysis runs at every (VGS, VDS) point.
+Gate and drain are held by ideal sources, so the noise current through them is
+the device's short-circuit noise:
+
+| Parameter | Quantity | Unit |
+|---|---|---|
+| `sid_<f>` | total drain-current noise (`oprobe=VDS`) | A²/Hz |
+| `sig_<f>` | gate-current noise (`oprobe=VGS`): induced gate and gate-leakage shot noise, if the model has them | A²/Hz |
+| `sid_thermal` | `sid` at `noise_thermal_frequency`, i.e. the white level | A²/Hz |
+| `sid_flicker_<f>` | `max(sid_<f> − sid_thermal, 0)` for every lower frequency | A²/Hz |
+
+`<f>` is a lowercase tag: `1hz`, `1khz`, `1meghz`, `1ghz`, `2p5khz` (2.5 kHz),
+`100mhz` (100 mHz). Example: `sid_1khz`.
+
+The thermal/flicker split is derived from the frequency points, so it works
+with any model (BSIM, PSP, BSIM-CMG). Two conditions apply:
+
+- **Thermal frequency above the flicker corner.** It must be above the flicker
+  corner at every bias point you sweep. Long devices at low gm/ID have the
+  highest corners.
+- **Flat high-frequency spectrum.** The drain noise must still be flat there.
+  1 GHz is usually fine; check the `sid_<f>` curves if your devices are very
+  long.
+
+A noise analysis at every bias point is much slower than the DC sweep, because
+it adds two small-signal analyses per (VGS, VDS) point. Use few frequencies and
+a coarser VGS/VDS step if build time matters. Noise is not available with
+ngspice or HSPICE.
+
+Each device entry of the table also gets a `"noise"` dict with the frequencies,
+the thermal frequency and the simulation temperature. The noise expressions use
+it (see [design charts](plotting.md#noise)).
+
+> Spectre writes the noise output as a root spectral density (A/√Hz), which is
+> squared into A²/Hz. If your Spectre version already writes A²/Hz, set
+> `SpectreSimulator.NOISE_OUTPUT_IS_ROOT_PSD = False` before building.
 
 ## 2. Define the sweeps
 

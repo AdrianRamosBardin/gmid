@@ -356,6 +356,51 @@ return out
 Every key appears in the report; only keys listed in `TARGET_SPECS` affect the
 optimization.
 
+#### Noise specs
+
+If the lookup tables were generated with noise (see
+[lookup tables](lookup_tables.md#noise-spectre)), `dev.nmos.noise(...)` and
+`dev.pmos.noise(...)` take the same arguments as a normal lookup and return a
+`NoisePoint` for the table width. `.scaled(W, table_width)` converts it to the
+real device. At fixed gm/ID, L, VDS and VSB every noise PSD is proportional to
+W, so this scaling is exact. Do these lookups in `solve_point()` (`specs()` has
+no `dev`), and only for the devices a noise spec needs, because they are not
+free:
+
+```python
+# in solve_point(), after W has been computed
+N1 = dev.pmos.noise(gmid=v.M1a_GMID, L=v.M1a_L, vds=M1a_VDS, vsb=M1a_VSB).scaled(W["M1a"], ptw)
+N2 = dev.nmos.noise(gmid=v.M2a_GMID, L=v.M2a_L, vds=M2a_VDS).scaled(W["M2a"], ntw)
+return State(..., N1=N1, N2=N2)
+```
+
+The hand-derived noise equations then go in `specs()`. For example, the
+input-referred noise of a differential pair with a mirror load, valid below the
+first pole:
+
+```python
+gm1 = b.GMID["M1a"] * b.ID["M1a"]
+svin = lambda f: 2 * (b.N1.sid_at(f) + b.N2.sid_at(f)) / gm1**2           # V^2/Hz
+out["Vn_in @1kHz (V/rtHz)"] = np.sqrt(svin(1e3))
+vn2 = 2 * (b.N1.integrated_sid(10, 1e6) + b.N2.integrated_sid(10, 1e6)) / gm1**2
+out["Vn_in rms 10Hz-1MHz (V)"] = np.sqrt(vn2)
+```
+
+`NoisePoint` methods (all PSDs in A²/Hz unless noted):
+
+| Method | Quantity |
+|---|---|
+| `sid_at(f)`, `sid_flicker_at(f)`, `sid_thermal` | total, flicker and white drain-current noise |
+| `sig_at(f)` | gate-current noise |
+| `svg_at(f, gm)`, `svg_thermal(gm)` | input-referred gate voltage noise S_id/gm² (V²/Hz) |
+| `integrated_sid(f1, f2)`, `integrated_svg(f1, f2, gm)` | noise power in a band (A², V²) |
+| `gamma(gm)` | thermal noise factor S_id,th / 4kTgm |
+| `flicker_corner()` | frequency where flicker equals thermal noise (Hz) |
+
+Between the simulated frequencies values are interpolated log-log, and band
+integrals treat each segment as a power law. A frequency outside the simulated
+range raises an error, because nothing is extrapolated.
+
 ### Step 8: Multicorner conservation
 
 On silicon the bias is a fixed reference current into the diode `Mvbp`. When the

@@ -2,7 +2,7 @@ from .optimizer import Optimizer
 from .design_report import DesignReport
 from .datatypes import Spec, Knob, Unknown, Role
 from .template import CircuitModel, State, vres, rres
-from .device import DeviceTable, DevicePoint
+from .device import DeviceTable, DevicePoint, NoisePoint
 from .corner import Corner
 from .evaluate import CornerResult
 from .driver import run
@@ -35,6 +35,7 @@ __all__ = [
     "rres",
     "DeviceTable",
     "DevicePoint",
+    "NoisePoint",
     "Corner",
     "CornerResult",
     # AC engine

@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from typing import overload
 
-from mosplot.expressions import Expression, build_expressions, compute_device_width
+from mosplot.expressions import (
+    Expression,
+    NoiseExpressions,
+    build_expressions,
+    compute_device_width,
+    noise_metadata,
+)
 from mosplot.interpolation import GmIdTable
 from mosplot.optimizer.fast_mosfet_reverse import _lookup_axis_for_impl
 
 
-class FastMosfet:
+class FastMosfet(NoiseExpressions):
     """Fast MOSFET lookup for circuit optimization.
 
     Wraps GmIdTable to provide expression-based lookups indexed by
@@ -109,6 +115,8 @@ class FastMosfet:
         self._width = compute_device_width(dev_params)
         self._param_names = param_names
         self._mos_name = mos_name
+        self._noise_meta = noise_metadata(dev)
+        self._noise_param_names = param_names
 
         vdsat_var = "vdssat" if "vdssat" in param_names else "vdsat"
         for name, expr in build_expressions(self._width, vdsat_var).items():

@@ -55,6 +55,8 @@ class LookupTableGenerator:
         lookup_table["simulator"] = self.simulator.__class__.__name__
         lookup_table["parameter_names"] = parameters_to_save
         lookup_table["device_parameters"] = device_parameters
+        # Frequencies, thermal reference and temperature of the noise columns, if any.
+        noise_meta = getattr(self.simulator, "noise_metadata", lambda: None)()
         for transistor_name, sweep in self.model_sweeps.items():
             per_transistor_params = dict(device_parameters)
             per_transistor_params.update(cleaner.scalar_params.get(transistor_name, {}))
@@ -65,6 +67,10 @@ class LookupTableGenerator:
             lookup_table[transistor_name]["model_name"] = transistor_name
             lookup_table[transistor_name]["parameter_names"] = parameters_to_save
             lookup_table[transistor_name]["device_parameters"] = per_transistor_params
+            if noise_meta and any(
+                p in lookup_table[transistor_name] for p in self.simulator.noise_parameter_names()
+            ):
+                lookup_table[transistor_name]["noise"] = dict(noise_meta)
 
         directory = os.path.dirname(filepath)
         if directory and not os.path.exists(directory):

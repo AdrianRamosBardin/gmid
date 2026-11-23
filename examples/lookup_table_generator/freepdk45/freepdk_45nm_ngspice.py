@@ -7,11 +7,11 @@ SIMULATOR = NgspiceSimulator
 
 DESCRIPTION = "Freepdk 45nm GMID lookup table"
 
-BUILD_DIR = "/home/medwatt/freepdk_45_ngspice"
+BUILD_DIR = "/home/arb/Work/gmId_py_dev/freepdk_45_ngspice"
 
 INCLUDE_PATHS=[
-    "NMOS_VTH.inc",
-    "PMOS_VTH.inc",
+    "/home/arb/Work/gmId_py_dev/gmid/examples/lookup_table_generator/freepdk45/NMOS_VTH.inc",
+    "/home/arb/Work/gmId_py_dev/gmid/examples/lookup_table_generator/freepdk45/PMOS_VTH.inc",
 ]
 
 NMOS = "NMOS_VTH"

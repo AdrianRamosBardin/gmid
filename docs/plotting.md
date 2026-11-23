@@ -69,6 +69,46 @@ fom = Expression(
 The names you can use are the saved parameters
 (`lookup_table["parameter_names"]`) plus `length`, `vgs`, `vds`, and `vbs`.
 
+### Noise
+
+Tables built with [noise](lookup_tables.md#noise-spectre) add noise
+expressions. Frequency-dependent ones are methods that take the frequency in
+Hz. Any frequency inside the simulated range works: values between the stored
+points are interpolated log-log, which is exact for a 1/f^AF slope.
+
+| Expression | Quantity |
+|---|---|
+| `sid_expression(f)` | total drain-current noise PSD (A²/Hz) |
+| `sid_flicker_expression(f)`, `sid_thermal_expression` | flicker and white parts of it |
+| `sig_expression(f)` | gate-current noise PSD (A²/Hz) |
+| `svg_expression(f)`, `svg_flicker_expression(f)`, `svg_thermal_expression` | input-referred gate voltage noise S_id/gm² (V²/Hz) |
+| `gamma_expression` | thermal noise factor γ = S_id,th / 4kTgm |
+| `flicker_corner_expression` | frequency where flicker noise equals thermal noise (Hz) |
+
+`nmos.noise_frequencies` lists the stored frequencies, and
+`nmos.noise_parameter("sid", 1e3)` gives the raw parameter name (`"sid_1khz"`)
+to use in a custom expression:
+
+```python
+nmos.plot_by_expression(
+    x_expression=nmos.gmid_expression,
+    y_expression=nmos.svg_expression(1e3),
+    y2_expression=nmos.flicker_corner_expression,
+    y_scale="log",
+    y2_scale="log",
+)
+
+# input-referred noise voltage density in V/√Hz at 1 kHz
+vn = Expression(
+    variables=[nmos.noise_parameter("sid", 1e3), "gm"],
+    function=lambda sid, gm: np.sqrt(sid) / gm,
+    label=r"$v_n\ @\ 1\,\mathrm{kHz}\ (V/\sqrt{Hz})$",
+)
+```
+
+Noise expressions also work in `interpolate`, `lookup_expression_from_table`,
+and in `FastMosfet` lookups for the optimizer.
+
 ## Design charts: `plot_by_expression`
 
 Plots one expression against another over the device you defined, with one curve

@@ -12,11 +12,24 @@ down, reverse bias being ``vbs = -|vsb|``; the PMOS tables of the LUT generator 
 
 from __future__ import annotations
 
+import math
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
+from mosplot.expressions.noise import (
+    BOLTZMANN,
+    SID,
+    SID_FLICKER,
+    SID_THERMAL,
+    SIG,
+    available_frequencies,
+    flicker_corner,
+    integrate_power_law,
+    noise_parameter_name,
+    _value_at,
+)
 from mosplot.interpolation.fast.interp import _lookup_scalar_nb
 
 
@@ -53,6 +66,92 @@ class DevicePoint:
             "cgd": self.cgd * scale,
             "cdd": self.cdd * scale,
         }
+
+
+@dataclass(frozen=True)
+class NoisePoint:
+    """Device noise at one operating point, as PSDs [A^2/Hz].
+
+    `DeviceTable.noise` returns it for the LUT device width; call ``scaled(W, table_width)``
+    for the real device. At fixed gm/ID, L, VDS and VSB every noise PSD is proportional to
+    the width (like ID, gm and the capacitances), so scaling is exact.
+
+    Between the stored frequencies, values are interpolated log-log (power law); outside
+    them a ValueError is raised.
+    """
+
+    frequencies: tuple  # frequencies where sid is stored [Hz], ascending
+    sid: tuple  # total drain-current noise PSD at each frequency
+    sid_thermal: float  # white drain-current noise PSD
+    flicker_frequencies: tuple  # frequencies where the flicker part is stored
+    sid_flicker: tuple  # flicker drain-current noise PSD at each flicker frequency
+    sig_frequencies: tuple = ()  # frequencies where gate noise is stored (empty: none)
+    sig: tuple = ()  # gate-current noise PSD at each sig frequency
+    temperature: float = 27.0  # simulation temperature [degC], for gamma
+
+    def scaled(self, width: float, table_width: float) -> "NoisePoint":
+        """The same operating point for a device of `width` (LUT built at `table_width`)."""
+        s = width / table_width
+        return replace(
+            self,
+            sid=tuple(v * s for v in self.sid),
+            sid_thermal=self.sid_thermal * s,
+            sid_flicker=tuple(v * s for v in self.sid_flicker),
+            sig=tuple(v * s for v in self.sig),
+        )
+
+    # --- spot values ---
+    def sid_at(self, frequency: float) -> float:
+        """Total drain-current noise PSD at `frequency` [A^2/Hz]."""
+        return _value_at(self.frequencies, self.sid, frequency)
+
+    def sid_flicker_at(self, frequency: float) -> float:
+        """Flicker part of the drain-current noise PSD at `frequency` [A^2/Hz]."""
+        if not self.flicker_frequencies:
+            raise ValueError("No flicker noise points stored.")
+        return _value_at(self.flicker_frequencies, self.sid_flicker, frequency)
+
+    def sig_at(self, frequency: float) -> float:
+        """Gate-current noise PSD at `frequency` [A^2/Hz]."""
+        if not self.sig_frequencies:
+            raise ValueError("No gate noise (sig) in this lookup table.")
+        return _value_at(self.sig_frequencies, self.sig, frequency)
+
+    def svg_at(self, frequency: float, gm: float) -> float:
+        """Input-referred gate voltage noise PSD S_id/gm^2 at `frequency` [V^2/Hz]."""
+        return self.sid_at(frequency) / gm**2
+
+    def svg_thermal(self, gm: float) -> float:
+        """Input-referred thermal voltage noise PSD [V^2/Hz]."""
+        return self.sid_thermal / gm**2
+
+    # --- integrated values ---
+    def integrated_sid(self, f_start: float, f_stop: float) -> float:
+        """Drain-current noise power in [f_start, f_stop] [A^2] (piecewise power-law)."""
+        return integrate_power_law(self.frequencies, self.sid, f_start, f_stop)
+
+    def integrated_svg(self, f_start: float, f_stop: float, gm: float) -> float:
+        """Input-referred voltage noise power in [f_start, f_stop] [V^2]."""
+        return self.integrated_sid(f_start, f_stop) / gm**2
+
+    # --- figures ---
+    def gamma(self, gm: float) -> float:
+        """Thermal noise factor S_id,th / (4 k T gm). Use gm of the same width."""
+        return self.sid_thermal / (4.0 * BOLTZMANN * (self.temperature + 273.15) * abs(gm))
+
+    def flicker_corner(self) -> float:
+        """Frequency where the flicker part equals the thermal level [Hz] (NaN if undefined).
+
+        Width independent. Fits 1/f^AF on the two lowest flicker points (1/f with one).
+        """
+        if not self.flicker_frequencies:
+            return math.nan
+        if len(self.flicker_frequencies) == 1:
+            return flicker_corner(self.flicker_frequencies[0], self.sid_flicker[0], self.sid_thermal)
+        return flicker_corner(
+            self.flicker_frequencies[0], self.sid_flicker[0], self.sid_thermal,
+            self.flicker_frequencies[1], self.sid_flicker[1],
+        )
 
 
 class DeviceTable:
@@ -109,6 +208,57 @@ class DeviceTable:
         self._inv_width = 1.0 / fast_mosfet._width
         # Reverse body bias is toward the side of the vbs axis that is not zero.
         self._vbs_sign = 1.0 if float(np.max(self._lut.vbs)) > 0.0 else -1.0
+
+        # --- noise (opt-in, off the hot path) -----------------------------------------
+        # Plain data only, so the parallel optimizer can copy it into its workers.
+        meta = getattr(fast_mosfet, "_noise_meta", None)
+        stored = [p for p in getattr(_tbl, "params", []) if p in _tbl._param_idx]
+        self._noise_layout = None
+        if meta and SID_THERMAL in stored:
+            layout = {
+                kind: available_frequencies(meta, kind, stored) for kind in (SID, SID_FLICKER, SIG)
+            }
+            if layout[SID]:
+                layout["temperature"] = float(meta.get("temperature", 27.0))
+                layout["params"] = [
+                    noise_parameter_name(kind, f)
+                    for kind in (SID, SID_FLICKER, SIG)
+                    for f in layout[kind]
+                ] + [SID_THERMAL]
+                self._noise_layout = layout
+
+    @property
+    def has_noise(self) -> bool:
+        return self._noise_layout is not None
+
+    def noise(self, gmid: float, L: float, vds: float, vsb: float = 0.0) -> NoisePoint:
+        """Noise of the LUT-width device at one operating point (same arguments as a call).
+
+        Scale to the real device with ``.scaled(W, table_width)``. Not on the optimizer's
+        hot path: call it only for devices whose noise a spec needs.
+        """
+        layout = self._noise_layout
+        if layout is None:
+            raise ValueError(
+                f"lookup table of {self.fm._mos_name!r} has no noise data; regenerate it "
+                "with SpectreSimulator(..., noise_frequencies=[...])."
+            )
+        vds_signed = abs(vds) if self.pol == "n" else -abs(vds)
+        raw = self._lut.lookup_scalar(L, gmid, vds_signed, self._vbs_sign * abs(vsb), params=layout["params"])
+
+        def values(kind):
+            return tuple(raw[noise_parameter_name(kind, f)] for f in layout[kind])
+
+        return NoisePoint(
+            frequencies=tuple(layout[SID]),
+            sid=values(SID),
+            sid_thermal=raw[SID_THERMAL],
+            flicker_frequencies=tuple(layout[SID_FLICKER]),
+            sid_flicker=values(SID_FLICKER),
+            sig_frequencies=tuple(layout[SIG]),
+            sig=values(SIG),
+            temperature=layout["temperature"],
+        )
 
     def __call__(self, gmid: float, L: float, vds: float, vsb: float = 0.0) -> DevicePoint:
         """Look up one operating point. Pass positive magnitudes; signs are applied here."""
